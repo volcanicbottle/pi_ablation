@@ -1,5 +1,6 @@
 import collections
 import dataclasses
+import json
 import logging
 import math
 import pathlib
@@ -99,6 +100,8 @@ def eval_libero(args: Args) -> None:
             # Setup
             t = 0
             replay_images = []
+            replay_actions = []
+            replay_states = []
 
             logging.info(f"Starting episode {task_episodes+1}...")
             while t < max_steps + args.num_steps_wait:
@@ -149,6 +152,18 @@ def eval_libero(args: Args) -> None:
 
                     action = action_plan.popleft()
 
+                    # Record pre-step action and proprio state for failure replay
+                    replay_actions.append(np.asarray(action))
+                    replay_states.append(
+                        np.concatenate(
+                            (
+                                obs["robot0_eef_pos"],
+                                obs["robot0_eef_quat"],
+                                obs["robot0_gripper_qpos"],
+                            )
+                        )
+                    )
+
                     # Execute action in environment
                     obs, reward, done, info = env.step(action.tolist())
                     if done:
@@ -164,14 +179,33 @@ def eval_libero(args: Args) -> None:
             task_episodes += 1
             total_episodes += 1
 
-            # Save a replay video of the episode
+            # Save a replay video of the episode (per-suite folder, includes task_id+ep_idx so episodes don't overwrite)
             suffix = "success" if done else "failure"
             task_segment = task_description.replace(" ", "_")
+            suite_dir = pathlib.Path(args.video_out_path) / args.task_suite_name
+            suite_dir.mkdir(parents=True, exist_ok=True)
+            video_name = f"rollout_task{task_id:02d}_ep{episode_idx:02d}_{task_segment}_{suffix}.mp4"
             imageio.mimwrite(
-                pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_{suffix}.mp4",
+                suite_dir / video_name,
                 [np.asarray(x) for x in replay_images],
                 fps=10,
             )
+
+            # On failure, dump full rollout artifact (images + actions + states + metadata) for offline debugging
+            if not done:
+                fail_dir = suite_dir / "failures"
+                fail_dir.mkdir(parents=True, exist_ok=True)
+                np.savez(
+                    fail_dir / f"task{task_id:02d}_ep{episode_idx:02d}.npz",
+                    images=np.stack(replay_images) if replay_images else np.zeros((0,)),
+                    actions=np.stack(replay_actions) if replay_actions else np.zeros((0,)),
+                    states=np.stack(replay_states) if replay_states else np.zeros((0,)),
+                    instruction=str(task_description),
+                    seed=args.seed,
+                    task_id=task_id,
+                    episode_idx=episode_idx,
+                    initial_state=initial_states[episode_idx],
+                )
 
             # Log current results
             logging.info(f"Success: {done}")
@@ -184,6 +218,20 @@ def eval_libero(args: Args) -> None:
 
     logging.info(f"Total success rate: {float(total_successes) / float(total_episodes)}")
     logging.info(f"Total episodes: {total_episodes}")
+
+    # Write per-suite summary so the 4 numbers (one per suite) can be picked up programmatically
+    suite_dir = pathlib.Path(args.video_out_path) / args.task_suite_name
+    suite_dir.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "suite": args.task_suite_name,
+        "seed": args.seed,
+        "num_trials_per_task": args.num_trials_per_task,
+        "total_episodes": total_episodes,
+        "total_successes": total_successes,
+        "success_rate": float(total_successes) / float(total_episodes),
+    }
+    with open(suite_dir / "summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
 
 
 def _get_libero_env(task, resolution, seed):
