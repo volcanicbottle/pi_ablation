@@ -15,6 +15,8 @@ from openpi_client import websocket_client_policy as _websocket_client_policy
 import tqdm
 import tyro
 
+import random
+
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
 
@@ -44,7 +46,7 @@ class Args:
     video_out_path: str = "data/libero/videos"  # Path to save videos
 
     seed: int = 7  # Random Seed (for reproducibility)
-
+    ablation: str = "none"  # none / empty_lang / wrong_lang / black_img
 
 def eval_libero(args: Args) -> None:
     # Set random seed
@@ -72,7 +74,7 @@ def eval_libero(args: Args) -> None:
         raise ValueError(f"Unknown task suite: {args.task_suite_name}")
 
     client = _websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
-
+    all_instructions= [task_suite.get_task(i).language for i in range(num_tasks_in_suite)]
     # Start evaluation
     total_episodes, total_successes = 0, 0
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
@@ -130,9 +132,23 @@ def eval_libero(args: Args) -> None:
                     if not action_plan:
                         # Finished executing previous action chunk -- compute new chunk
                         # Prepare observations dict
+                        prompt = str(task_description)
+                        infer_img = img
+                        infer_wrist = wrist_img
+
+                        if args.ablation == "empty_lang":
+                            prompt = ""
+                        elif args.ablation == "wrong_lang":
+                            rng = random.Random(args.seed + task_id)
+                            other_ids = [i for i in range(num_tasks_in_suite) if i != task_id]
+                            wrong_id = rng.choice(other_ids)
+                            prompt = str(all_instructions[wrong_id])
+                        elif args.ablation == "black_img":
+                            infer_img = np.zeros_like(img)
+                            infer_wrist = np.zeros_like(wrist_img)
                         element = {
-                            "observation/image": img,
-                            "observation/wrist_image": wrist_img,
+                            "observation/image": infer_img,
+                            "observation/wrist_image": infer_wrist,
                             "observation/state": np.concatenate(
                                 (
                                     obs["robot0_eef_pos"],
@@ -140,7 +156,7 @@ def eval_libero(args: Args) -> None:
                                     obs["robot0_gripper_qpos"],
                                 )
                             ),
-                            "prompt": str(task_description),
+                            "prompt": prompt,
                         }
 
                         # Query model to get action
