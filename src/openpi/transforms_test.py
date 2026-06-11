@@ -111,6 +111,54 @@ def test_transform_dict():
     assert output == {"a": {"b": 1, "d": 1}, "b": {"d": 2}}
 
 
+def _ablation_data():
+    return {
+        "image_mask": {"base_0_rgb": np.True_, "left_wrist_0_rgb": np.True_, "right_wrist_0_rgb": np.False_},
+        "tokenized_prompt": np.arange(10),
+        "tokenized_prompt_mask": np.array([True] * 6 + [False] * 4),
+        "state": np.zeros(8),
+    }
+
+
+def test_apply_ablation_mask_noop_without_key():
+    data = _ablation_data()
+    out = _transforms.ApplyAblationMask()(dict(data))
+    assert out["image_mask"]["base_0_rgb"] == np.True_
+    assert out["tokenized_prompt_mask"].sum() == 6
+
+
+def test_apply_ablation_mask_none():
+    out = _transforms.ApplyAblationMask()({**_ablation_data(), "ablation": "none"})
+    assert "ablation" not in out
+    assert out["image_mask"]["base_0_rgb"] == np.True_
+    assert out["tokenized_prompt_mask"].sum() == 6
+
+
+def test_apply_ablation_mask_v():
+    out = _transforms.ApplyAblationMask()({**_ablation_data(), "ablation": "mask_v"})
+    assert "ablation" not in out
+    assert not any(out["image_mask"].values())
+    assert out["tokenized_prompt_mask"].sum() == 6  # language untouched
+
+
+def test_apply_ablation_mask_l():
+    out = _transforms.ApplyAblationMask()({**_ablation_data(), "ablation": "mask_l"})
+    assert out["image_mask"]["base_0_rgb"] == np.True_  # vision untouched
+    assert out["tokenized_prompt_mask"].sum() == 0
+    assert out["tokenized_prompt_mask"].dtype == np.bool_
+
+
+def test_apply_ablation_mask_vl():
+    out = _transforms.ApplyAblationMask()({**_ablation_data(), "ablation": "mask_vl"})
+    assert not any(out["image_mask"].values())
+    assert out["tokenized_prompt_mask"].sum() == 0
+
+
+def test_apply_ablation_mask_rejects_unknown():
+    with pytest.raises(ValueError, match="Unknown ablation"):
+        _transforms.ApplyAblationMask()({**_ablation_data(), "ablation": "black_img"})
+
+
 def test_extract_prompt_from_task():
     transform = _transforms.PromptFromLeRobotTask({1: "Hello, world!"})
 

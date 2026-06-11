@@ -266,6 +266,35 @@ class TokenizePrompt(DataTransformFn):
         return {**data, "tokenized_prompt": tokens, "tokenized_prompt_mask": token_masks}
 
 
+_ABLATION_CHOICES = ("none", "mask_v", "mask_l", "mask_vl")
+
+
+@dataclasses.dataclass(frozen=True)
+class ApplyAblationMask(DataTransformFn):
+    """Masks out input modalities via attention masks for ablation experiments.
+
+    Reads and removes an optional "ablation" key ("none", "mask_v", "mask_l",
+    "mask_vl"). Must run after the tokenizer transform so that
+    `tokenized_prompt_mask` exists. No-op when the key is absent.
+    """
+
+    def __call__(self, data: DataDict) -> DataDict:
+        ablation = data.pop("ablation", None)
+        if ablation is None:
+            return data
+        if not isinstance(ablation, str):
+            ablation = str(np.asarray(ablation).item())
+        if ablation not in _ABLATION_CHOICES:
+            raise ValueError(f"Unknown ablation: {ablation!r}, expected one of {_ABLATION_CHOICES}")
+        if ablation == "none":
+            return data
+        if "v" in ablation.removeprefix("mask_"):
+            data["image_mask"] = {key: np.False_ for key in data["image_mask"]}
+        if "l" in ablation.removeprefix("mask_"):
+            data["tokenized_prompt_mask"] = np.zeros_like(data["tokenized_prompt_mask"])
+        return data
+
+
 @dataclasses.dataclass(frozen=True)
 class TokenizeFASTInputs(DataTransformFn):
     tokenizer: _tokenizer.FASTTokenizer
