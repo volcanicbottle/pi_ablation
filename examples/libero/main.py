@@ -46,11 +46,15 @@ class Args:
     video_out_path: str = "data/libero/videos"  # Path to save videos
 
     seed: int = 7  # Random Seed (for reproducibility)
-    ablation: str = "none"  # none / empty_lang / wrong_lang / black_img
+    ablation: str = "none"  # none / mask_v / mask_l / mask_vl / wrong_lang
 
 def eval_libero(args: Args) -> None:
     # Set random seed
     np.random.seed(args.seed)
+
+    valid_ablations = ("none", "mask_v", "mask_l", "mask_vl", "wrong_lang")
+    if args.ablation not in valid_ablations:
+        raise ValueError(f"Unknown ablation: {args.ablation}, expected one of {valid_ablations}")
 
     # Initialize LIBERO task suite
     benchmark_dict = benchmark.get_benchmark_dict()
@@ -133,22 +137,14 @@ def eval_libero(args: Args) -> None:
                         # Finished executing previous action chunk -- compute new chunk
                         # Prepare observations dict
                         prompt = str(task_description)
-                        infer_img = img
-                        infer_wrist = wrist_img
-
-                        if args.ablation == "empty_lang":
-                            prompt = ""
-                        elif args.ablation == "wrong_lang":
+                        if args.ablation == "wrong_lang":
                             rng = random.Random(args.seed + task_id)
                             other_ids = [i for i in range(num_tasks_in_suite) if i != task_id]
                             wrong_id = rng.choice(other_ids)
                             prompt = str(all_instructions[wrong_id])
-                        elif args.ablation == "black_img":
-                            infer_img = np.zeros_like(img)
-                            infer_wrist = np.zeros_like(wrist_img)
                         element = {
-                            "observation/image": infer_img,
-                            "observation/wrist_image": infer_wrist,
+                            "observation/image": img,
+                            "observation/wrist_image": wrist_img,
                             "observation/state": np.concatenate(
                                 (
                                     obs["robot0_eef_pos"],
@@ -158,6 +154,9 @@ def eval_libero(args: Args) -> None:
                             ),
                             "prompt": prompt,
                         }
+                        if args.ablation.startswith("mask_"):
+                            # Server-side attention-mask ablation (ApplyAblationMask).
+                            element["ablation"] = args.ablation
 
                         # Query model to get action
                         action_chunk = client.infer(element)["actions"]
@@ -240,6 +239,7 @@ def eval_libero(args: Args) -> None:
     suite_dir.mkdir(parents=True, exist_ok=True)
     summary = {
         "suite": args.task_suite_name,
+        "ablation": args.ablation,
         "seed": args.seed,
         "num_trials_per_task": args.num_trials_per_task,
         "total_episodes": total_episodes,
