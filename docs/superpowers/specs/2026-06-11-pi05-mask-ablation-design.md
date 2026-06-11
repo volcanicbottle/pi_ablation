@@ -1,33 +1,38 @@
 # π₀.₅ 输入模态 Mask Ablation 实验设计
 
-日期：2026-06-11
-状态：待用户确认
+日期：2026-06-11（修订 2：确认 pi05_libero 无 state 输入，矩阵缩为 4 臂）
+状态：已批准
 
 ## 1. 背景与科学问题
 
 对 `pi05_libero` checkpoint（π₀.₅ 在 LIBERO 上微调的官方模型）做输入模态 ablation，
-回答：**模型是否 overfit——即它是否在"背轨迹"或"靠场景猜任务"，而不是真正使用视觉
-和语言信息？**
+回答：**模型是否 overfit——即它是否在"背任务轨迹"或"靠场景猜任务"，而不是真正使用
+视觉和语言信息？**
 
-具体怀疑（三个都查）：
-- 模型可能没在看图（靠 state 在记住的轨迹上"查表"续写动作）
+具体怀疑（两个都查）：
+- 模型可能没在看图（按指令开环回放背下来的动作序列）
 - 模型可能没在听指令（LIBERO 场景与任务强相关，看场景即可猜出任务）
-- 模型可能过度依赖本体状态 state
 
-## 2. 模型输入结构（π₀.₅ 特有，影响实现）
+## 2. 模型输入结构（实测确认，与直觉不同）
 
-π₀.₅-LIBERO 共四路输入：
+**`pi05_libero` 只有两路有效输入：视觉 V（两个相机）和语言 L。**
+
+确认过程：
+- `config.py:745`：该配置显式 `discrete_state_input=False` → state 不拼进 prompt
+- `pi0.py:151`：连续 state token 仅在 `not pi05` 分支加入 → pi05 模型无 state 投影层
+- `obs.state` 在 forward 中唯一用途是取 batch size（`pi0.py:229`）
+
+即：评测客户端发送的机器人状态被服务端模型**完全忽略**。官方训练时刻意去掉了
+state 输入，"靠本体状态背轨迹"这条 overfit 路径被架构直接排除。
 
 | 输入 | 进入模型的方式 | mask 通路 |
 |---|---|---|
-| 主相机图像 | SigLIP → image tokens | `Observation.image_masks[name]`（pi0.py embed_prefix） |
-| 手腕相机图像 | 同上 | 同上 |
-| 语言指令 L | tokenize 进 prompt | `tokenized_prompt_mask` 的 "Task: ..." 段 |
-| 本体状态 S | **离散化成文本拼进 prompt**（tokenizer.py: `"Task: {prompt}, State: {state_str};\nAction: "`） | `tokenized_prompt_mask` 的 "State: ..." 段 |
+| 主相机 base_0_rgb | SigLIP → image tokens | `image_mask["base_0_rgb"] = False` |
+| 腕相机 left_wrist_0_rgb | 同上 | `image_mask["left_wrist_0_rgb"] = False` |
+| 语言指令 L | pi0 格式 tokenize（无 State 段） | `tokenized_prompt_mask` 全置 False |
 
-关键点：π₀.₅ 的 L 和 S 共享同一条 token 流（knowledge insulation 设计），
-分别 ablate 必须做 **token 段级 mask**——按 tokenizer 的拼接结构定位
-Task 段与 State 段的 token 区间，分段控制 mask。
+附带简化：原设计的"Task/State 段级 token mask"不再需要——prompt 里只有指令，
+−L 直接把整条 `tokenized_prompt_mask` 置 False 即可。
 
 ## 3. Mask 实现语义：attention mask（决定）
 
@@ -35,65 +40,63 @@ Task 段与 State 段的 token 区间，分段控制 mask。
 （黑图/空字符串）。理由：黑图是一张分布外的真实图像，掉点会混入"分布外冲击"，
 污染"信息缺失"的测量。
 
-注意：仓库中已有的客户端置零实现（commit 086fa7e：`empty_lang` / `wrong_lang` /
-`black_img`，在 `examples/libero/main.py`）**不符合本设计**，机制需替换为服务端
-attention mask。但其评测脚手架（`run_ablation_matrix.sh` 跑批脚本、summary.json
-输出、失败视频留存）直接复用。
+仓库已有的客户端置零实现（commit 086fa7e：`empty_lang` / `black_img`）废弃；
+`wrong_lang`（喂错误任务指令）保留为可选臂。评测脚手架（`run_ablation_matrix.sh`、
+summary.json、失败视频留存）复用。
 
-mask 开关从评测客户端经 websocket 传到 policy server，在服务端的
-policy transforms / 模型侧生效（具体接口在实施计划中定）。
+实现位置：新增通用 transform `ApplyAblationMask`（读取数据字典中的 `ablation` 键，
+无键时 no-op），挂在 LIBERO 数据配置 model_transforms 末尾；评测客户端按请求传
+`ablation` 字段。好处：一个常驻 policy server 可连续跑完所有臂，不需重启；
+训练与推理共用同一套 mask 代码，保证训练/测试一致。
 
-## 4. 第一阶段：推理时 mask ablation（6 臂矩阵）
+## 4. 第一阶段：推理时 mask ablation（4 臂矩阵）
 
 对原 `pi05_libero` checkpoint，不改权重，只在推理时 mask：
 
-| # | 臂 | mask 内容 | 回答的问题 |
+| # | 臂 | ablation 值 | 回答的问题 |
 |---|---|---|---|
-| 1 | baseline | 无 | 性能上界 |
-| 2 | −V | 两个相机全 mask | 模型看不看图 |
-| 3 | −L | Task 段 token | 模型听不听指令 |
-| 4 | −S | State 段 token | 模型是否依赖本体状态定位轨迹进度 |
-| 5 | −V−L | 视觉+语言，只留 S | **背轨迹的最直接检测** |
-| 6 | 全 mask | V+L+S 全 mask | 模型先验下界（"肌肉记忆"能拿几分） |
+| 1 | baseline | `none` | 性能上界 |
+| 2 | −V | `mask_v` | **背轨迹主检测**：指令告诉它任务，失明还能做成 = 背下了任务→动作序列（开环执行，无视觉反馈） |
+| 3 | −L | `mask_l` | 听不听指令（仅 goal suite 有诊断力，见 §6） |
+| 4 | −V−L（=全 mask） | `mask_vl` | 无条件生成 = 模型先验下界 |
 
-已砍掉的臂：分相机 ablation（−主相机 / −腕相机）——主问题不需要，留作后续可选。
-可选附加臂：`wrong_lang`（喂错误任务的指令，复用已有实现）——区分"忽略语言"与
-"错误使用语言"，第二优先。
+可选附加臂：`wrong_lang`，区分"忽略语言"与"错误使用语言"。
 
 ### 下界参照
 
 - 随机/零动作的环境水分：按用户判断取 ≈0（LIBERO 任务需实际完成操作）。
-- 臂 6（全 mask）作为模型先验下界。
-- 解读规则：mask 后成功率应与下界比，**掉得越少越说明该信息没被使用 = overfit 证据**。
+- 臂 4（mask_vl）即模型先验下界，不需要单独的全 mask 臂。
+- 解读规则：mask 后成功率与下界比，**掉得越少越说明该信息没被使用 = overfit 证据**。
 
 ### 评测协议
 
-- Suite：第一轮只跑 **libero_goal**（语言 ablation 最有诊断力：同场景多任务）
-  + **libero_spatial**（视觉 ablation 最有诊断力：空间关系必须看图）。
-  object / long 视第一轮信号决定是否补。
-- 每任务 10 trials，每 suite 10 任务 → 每臂 200 rollouts，6 臂共 1200 rollouts。
-- 统计精度：±5% 左右的二项置信区间，足以分辨"掉到下界"vs"保留大量能力"的大效应。
-- 固定 seed，各臂使用相同初始状态集，保证臂间可比。
+- Suite：第一轮只跑 **libero_goal** + **libero_spatial**；object / long 视信号决定是否补。
+- 每任务 10 trials，每 suite 10 任务 → 每臂 200 rollouts，4 臂共 800 rollouts。
+- 统计精度：约 ±5% 二项置信区间，足以分辨大效应。
+- 固定 seed，各臂使用相同初始状态集（`get_task_init_states` 按 episode_idx 索引，
+  天然一致），保证臂间可比。
 
 ## 5. 第二阶段：modality-dropout LoRA 微调 + 重跑矩阵
 
 ### 动机
 
-第一阶段的掉点混杂两种原因：(1) 信息真的必要；(2) 模型没见过缺模态输入，
-被分布外情况"吓到"。第二阶段消除 (2)。
+第一阶段的掉点混杂两种原因：(1) 信息真的必要；(2) 模型没见过缺模态输入，被分布外
+情况"吓到"。第二阶段消除 (2)。
 
 ### 微调方案
 
-- 起点：`pi05_libero` checkpoint，**LoRA**（24GB 显存约束），openpi 自带 LIBERO
-  训练配置与数据。
-- 唯一改动在输入侧：每个训练样本独立以 **p=0.2** 的概率分别丢弃 V / L / S
-  （三次独立采样，约 51% 样本输入完整）。
-- 丢弃的实现与评测时**完全相同**（attention mask），避免引入新的训练/测试不一致。
-- 步数 1–2 万步，验证 loss 平了即停；LoRA rank / 学习率用 openpi 默认。
+- 起点：`pi05_libero` checkpoint，**LoRA**（24GB 显存约束），新增 TrainConfig
+  `pi05_libero_mask_ft`，openpi 自带 LIBERO 数据（`physical-intelligence/libero`）。
+- 输入侧改动：每个训练样本独立以 **p=0.2** 概率丢 V、**p=0.2** 概率丢 L
+  （独立采样，64% 样本完整）。实现为训练专用 transform `SampleModalityDropout`
+  （挂在 repack 段，只在训练管道运行），写 `ablation` 键，由同一个
+  `ApplyAblationMask` 执行——与评测时的 mask 机制完全一致。
+- 步数 2 万步以内，看验证 loss 提前停；LoRA rank / 学习率用 openpi 默认；
+  batch size 按 24GB 调（起步 32）。
 
 ### 微调后
 
-用同一个微调模型**重跑第一阶段全部 6 臂**。
+用同一个微调模型**重跑第一阶段全部 4 臂**。
 
 ## 6. 解读规则（两阶段对照）
 
@@ -103,50 +106,48 @@ policy transforms / 模型侧生效（具体接口在实施计划中定）。
 **−L 臂的结论只在 goal suite 上有效**：libero_goal 同场景多任务，指令是区分任务的
 唯一信息，−L 不掉 = overfit 实锤；而 libero_spatial / object 的场景布局本身可能
 唯一确定任务，语言冗余，−L 不掉是正常现象，不构成证据。反向利用：spatial 上的
-−L 预期只小掉，若大掉则提示 mask 实现可能有 bug（同时把 State 段误伤了等）。
+−L 预期只小掉，若大掉则提示 mask 实现可能有 bug。
 
 | 观察 | 结论 |
 |---|---|
+| −V 远高于下界（mask_vl） | 背下了任务轨迹，闭眼开环也能执行 → overfit 实锤 |
 | 微调前 −L 几乎不掉（goal suite） | 模型本来就没在听指令 → 直接 overfit 证据 |
 | 微调前 −V 大掉，微调后 −V 几乎不掉 | 看似依赖视觉实为"吓到"；任务可被记忆解决 → overfit 隐患实锤 |
-| 微调前后 −V 都掉到下界附近 | 视觉是真刚需 → 无背轨迹证据 |
-| −V−L（只留 S）远高于下界 | 纯靠本体状态即可续写动作 → 背轨迹实锤 |
-| −S 几乎不掉 | state 信息冗余（视觉已覆盖），不算 overfit |
+| 微调前后 −V 都掉到下界附近 | 视觉是真刚需，无背轨迹证据 |
+| mask_vl 显著 >0 | 模型先验（平均动作风格）本身能蒙对的水分，解读其他臂时扣除 |
 
-## 7. 可选第三阶段（仅当第二阶段结果可疑时）
+## 7. 算力与预算
 
-若微调后 −V−L 臂成功率仍显著高于下界（如 >40%），追加一次**专属微调**：
-训练全程 mask V+L、只留 S，得到"纯 state 模型"。该模型若能训到高成功率，
-即证明任务可纯靠轨迹记忆完成（定罪的最后一锤）；若收敛后仍低，说明背轨迹
-这条路本身走不通。
-
-## 8. 算力与预算
-
-- 平台：AutoDL 租 4090（24GB），约 3 元/小时。本机（RTX 5060 Laptop 8GB）
-  只用于改代码调试，不跑模型。
-- 第一阶段评测：1200 rollouts ≈ 10–15 GPU 时 ≈ 40 元
+- 平台：AutoDL 租 4090（24GB），约 3 元/小时。本机（RTX 5060 Laptop 8GB）只改代码
+  跑单元测试，不跑模型。
+- 第一阶段评测：800 rollouts ≈ 7–10 GPU 时 ≈ 27 元
 - LoRA 微调：≈ 15 GPU 时 ≈ 45 元
-- 第二阶段评测：≈ 40 元
-- 合计 ≈ 130 元；可选第三阶段再 +60 元左右。
+- 第二阶段评测：≈ 27 元
+- 合计 ≈ 100 元。
 
-## 9. 实现要点（细节归实施计划）
+## 8. 实现要点
 
-1. **V mask**：评测端传开关 → 服务端在构造 `Observation` 时把对应
-   `image_masks[name]` 置 False（机制现成，`pi0.py:113-125` 已按 mask 跳过）。
-2. **L/S 段级 mask**：改 `tokenizer.py` 的 `tokenize()`，分段 tokenize
-   （Task 段 / State 段 / "Action:" 尾），返回各段边界；按臂配置将对应段的
-   `tokenized_prompt_mask` 置 False。"Action: " 尾段永不 mask。
-3. **dropout 微调**：在训练数据 transforms 中加随机模态丢弃（与上述同一套
-   mask 机制），写进训练 config。
-4. **评测脚手架**：复用 `run_ablation_matrix.sh` + `examples/libero/main.py`
-   的 summary/视频输出，把 `--ablation` 参数语义从置零改为 mask 配置。
-5. 已有的客户端置零代码路径保留但不再使用（或显式标记 deprecated），
-   `wrong_lang` 保留为可选臂。
+1. `ApplyAblationMask`（`src/openpi/transforms.py`）：pop `ablation` 键
+   （`none/mask_v/mask_l/mask_vl`），按值把 `image_mask` 全 False /
+   `tokenized_prompt_mask` 全 False。无键 no-op。挂在
+   `LeRobotLiberoDataConfig.create()` 的 model_transforms 末尾（训练与推理共用）。
+2. `SampleModalityDropout`（同文件）：按概率采样写 `ablation` 键；只挂在
+   repack_transforms（训练专用管道段，推理不经过）。
+3. `LiberoInputs`（`src/openpi/policies/libero_policy.py`）：透传 `ablation` 键
+   （该 transform 重建字典会丢未知键）。
+4. TrainConfig `pi05_libero_mask_ft`（`src/openpi/training/config.py`）：pi05 LoRA
+   变体 + dropout 数据配置 + 从 `gs://openpi-assets/checkpoints/pi05_libero/params`
+   加载权重 + freeze filter + ema off。
+5. 评测客户端 `examples/libero/main.py`：`--ablation` 取值改为
+   `none/mask_v/mask_l/mask_vl/wrong_lang`，mask 系列按请求发送 `ablation` 字段；
+   删除 `empty_lang`/`black_img` 置零路径；summary.json 记录 ablation。
+6. `run_ablation_matrix.sh`：支持一次启动 server 连跑多臂 × 多 suite。
+7. 盲测校验脚本：mask_vl 下喂两组不同图像+指令、固定噪声，断言输出动作逐位相同
+   （证明模型对被 mask 的输入真正不可见）；在 AutoDL 上跑。
 
-## 10. 风险
+## 9. 风险
 
-- token 段边界定位要小心 BOS/分隔符的归属，需要单元测试验证"mask Task 段后
-  State 段 token 完全不变"。
-- LIBERO 评测在 4090 上的实际 rollout 速度未实测，预算按 30–45 秒/rollout 估，
-  偏差 ±50% 在可接受范围。
-- `pi05_libero` 推理显存若超 24GB（不太可能）需要降 batch 或换卡。
+- pi05 + LoRA 变体组合未在官方配置中出现过（官方 LoRA 例子是 pi0），需在 AutoDL
+  上先跑通几十步冒烟验证。
+- LIBERO 评测在 4090 上的实际 rollout 速度未实测，预算按 30–45 秒/rollout 估。
+- `Normalize` transform 对字典里混入字符串键（`ablation`）的容忍性需单元测试确认。
