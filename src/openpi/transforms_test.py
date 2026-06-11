@@ -191,6 +191,27 @@ def test_libero_inputs_forwards_ablation_key():
     assert out["ablation"] == "mask_v"
 
 
+def test_ablation_survives_libero_pipeline():
+    from openpi.policies import libero_policy
+    from openpi.training import config as _train_config
+
+    train_config = _train_config.get_config("pi05_libero")
+    data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+    # Compose the inference-side input pipeline (policy_config.py order, minus Normalize
+    # which requires norm stats and only touches state/actions).
+    pipeline = _transforms.compose([*data_config.data_transforms.inputs, *data_config.model_transforms.inputs])
+
+    example = {**libero_policy.make_libero_example(), "ablation": "mask_vl"}
+    out = pipeline(example)
+    assert "ablation" not in out
+    assert not any(out["image_mask"].values())
+    assert out["tokenized_prompt_mask"].sum() == 0
+
+    baseline = pipeline(dict(libero_policy.make_libero_example()))
+    assert baseline["image_mask"]["base_0_rgb"]
+    assert baseline["tokenized_prompt_mask"].sum() > 0
+
+
 def test_extract_prompt_from_task():
     transform = _transforms.PromptFromLeRobotTask({1: "Hello, world!"})
 

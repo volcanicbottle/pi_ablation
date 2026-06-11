@@ -287,6 +287,9 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
     """
 
     extra_delta_transform: bool = False
+    # Modality dropout for masked fine-tuning (train-time only; 0 disables).
+    dropout_p_vision: float = 0.0
+    dropout_p_language: float = 0.0
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -311,6 +314,17 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
                 )
             ]
         )
+
+        # Train-time modality dropout: repack transforms only run on dataset data,
+        # never at inference, so this cannot affect evaluation.
+        if self.dropout_p_vision > 0 or self.dropout_p_language > 0:
+            repack_transform = repack_transform.push(
+                inputs=[
+                    _transforms.SampleModalityDropout(
+                        p_vision=self.dropout_p_vision, p_language=self.dropout_p_language
+                    )
+                ]
+            )
 
         # The data transforms are applied to the data coming from the dataset *and* during inference.
         # Below, we define the transforms for data going into the model (``inputs``) and the transforms
@@ -344,7 +358,12 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 
         # Model transforms include things like tokenizing the prompt and action targets
         # You do not need to change anything here for your own dataset.
-        model_transforms = ModelTransformFactory()(model_config)
+        # ApplyAblationMask runs last so input-ablation requests (eval client) and
+        # train-time modality dropout share the same attention-mask code path; it is
+        # a no-op when no "ablation" key is present.
+        model_transforms = ModelTransformFactory()(model_config).push(
+            inputs=[_transforms.ApplyAblationMask()]
+        )
 
         # We return all data transforms for training and inference. No need to change anything here.
         return dataclasses.replace(
