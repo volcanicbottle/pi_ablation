@@ -180,6 +180,17 @@ def test_sample_modality_dropout_is_random():
     assert len(seen) >= 3  # at least several distinct outcomes across samples
 
 
+def test_libero_inputs_forwards_ablation_key():
+    from openpi.models import model as _model
+    from openpi.policies import libero_policy
+
+    tf = libero_policy.LiberoInputs(model_type=_model.ModelType.PI05)
+    example = libero_policy.make_libero_example()
+    assert "ablation" not in tf(dict(example))
+    out = tf({**example, "ablation": "mask_v"})
+    assert out["ablation"] == "mask_v"
+
+
 def test_extract_prompt_from_task():
     transform = _transforms.PromptFromLeRobotTask({1: "Hello, world!"})
 

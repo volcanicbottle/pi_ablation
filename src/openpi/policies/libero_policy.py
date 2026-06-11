@@ -80,6 +80,11 @@ class LiberoInputs(transforms.DataTransformFn):
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
 
+        # Forward the ablation flag (if any) so ApplyAblationMask can consume it
+        # downstream; this transform rebuilds the dict, which would drop it.
+        if "ablation" in data:
+            inputs["ablation"] = data["ablation"]
+
         return inputs
 
 
