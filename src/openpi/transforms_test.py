@@ -159,6 +159,27 @@ def test_apply_ablation_mask_rejects_unknown():
         _transforms.ApplyAblationMask()({**_ablation_data(), "ablation": "black_img"})
 
 
+def test_sample_modality_dropout_probabilities():
+    tf = _transforms.SampleModalityDropout(p_vision=1.0, p_language=0.0)
+    out = tf({"prompt": "x"})
+    assert out["ablation"] == "mask_v"
+
+    tf = _transforms.SampleModalityDropout(p_vision=0.0, p_language=1.0)
+    assert tf({"prompt": "x"})["ablation"] == "mask_l"
+
+    tf = _transforms.SampleModalityDropout(p_vision=1.0, p_language=1.0)
+    assert tf({"prompt": "x"})["ablation"] == "mask_vl"
+
+    tf = _transforms.SampleModalityDropout(p_vision=0.0, p_language=0.0)
+    assert "ablation" not in tf({"prompt": "x"})
+
+
+def test_sample_modality_dropout_is_random():
+    tf = _transforms.SampleModalityDropout(p_vision=0.5, p_language=0.5)
+    seen = {tuple(sorted(tf({}).items())) for _ in range(200)}
+    assert len(seen) >= 3  # at least several distinct outcomes across samples
+
+
 def test_extract_prompt_from_task():
     transform = _transforms.PromptFromLeRobotTask({1: "Hello, world!"})
 

@@ -296,6 +296,28 @@ class ApplyAblationMask(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class SampleModalityDropout(DataTransformFn):
+    """Randomly drops input modalities during training (writes the "ablation" key
+    consumed by `ApplyAblationMask`). Insert in the repack stage so it never runs
+    at inference time. Vision and language are sampled independently per example.
+    """
+
+    p_vision: float = 0.0
+    p_language: float = 0.0
+
+    def __call__(self, data: DataDict) -> DataDict:
+        drop_v = np.random.rand() < self.p_vision
+        drop_l = np.random.rand() < self.p_language
+        if drop_v and drop_l:
+            data["ablation"] = "mask_vl"
+        elif drop_v:
+            data["ablation"] = "mask_v"
+        elif drop_l:
+            data["ablation"] = "mask_l"
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
 class TokenizeFASTInputs(DataTransformFn):
     tokenizer: _tokenizer.FASTTokenizer
 
