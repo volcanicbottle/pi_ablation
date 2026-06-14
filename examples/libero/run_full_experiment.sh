@@ -45,6 +45,13 @@ PHASE2_DIR="${PHASE2_DIR:-data/libero_ft}"            # fine-tuned-ckpt eval out
 PORT="${PORT:-8000}"
 SERVER_TIMEOUT="${SERVER_TIMEOUT:-900}"               # seconds to wait for server (first run downloads ~12GB)
 
+# The LIBERO client (main.py) lives in its OWN python-3.8 venv (torch 1.11+cu113,
+# robosuite, mujoco) — it conflicts with the main env and must NOT be installed there.
+# Server + training use the main `uv run` env; only the client uses this interpreter.
+# Setup: examples/libero/README.md "Without Docker" section.
+LIBERO_PY="${LIBERO_PY:-examples/libero/.venv/bin/python}"
+MUJOCO_GL="${MUJOCO_GL:-egl}"                          # set to glx if you hit EGL errors
+
 # phase toggles (1 = run, 0 = skip)
 RUN_BLINDNESS="${RUN_BLINDNESS:-1}"
 RUN_PHASE1="${RUN_PHASE1:-1}"
@@ -103,7 +110,9 @@ run_eval_matrix() {  # $1=out_root
       fi
       echo "[exp] === eval ablation=$ab suite=$suite -> $out ==="
       mkdir -p "$out"
-      uv run python examples/libero/main.py \
+      PYTHONPATH="${PYTHONPATH:-}:${REPO_ROOT}/third_party/libero" \
+      MUJOCO_GL="$MUJOCO_GL" \
+      "$LIBERO_PY" examples/libero/main.py \
         --ablation "$ab" \
         --task-suite-name "$suite" \
         --num-trials-per-task "$TRIALS" \
@@ -113,6 +122,18 @@ run_eval_matrix() {  # $1=out_root
     done
   done
 }
+
+# ----------------------------- preflight -----------------------------
+# The eval phases need the LIBERO client venv; fail early with instructions if absent.
+if { [ "$RUN_PHASE1" = "1" ] || [ "$RUN_PHASE2" = "1" ]; } && [ ! -x "$LIBERO_PY" ]; then
+  echo "[exp] ERROR: LIBERO client interpreter not found: $LIBERO_PY" >&2
+  echo "[exp] Create it (see examples/libero/README.md 'Without Docker'):" >&2
+  echo "      uv venv --python 3.8 examples/libero/.venv" >&2
+  echo "      uv pip sync --python examples/libero/.venv examples/libero/requirements.txt third_party/libero/requirements.txt \\" >&2
+  echo "        --extra-index-url https://download.pytorch.org/whl/cu113 --index-strategy=unsafe-best-match" >&2
+  echo "      uv pip install --python examples/libero/.venv -e packages/openpi-client -e third_party/libero" >&2
+  exit 1
+fi
 
 # ============================== 0. blindness check ==============================
 if [ "$RUN_BLINDNESS" = "1" ]; then
