@@ -37,7 +37,8 @@ uv pip sync --python examples/libero/.venv \
 uv pip install --python examples/libero/.venv -e packages/openpi-client
 uv pip install --python examples/libero/.venv -e third_party/libero
 
-# 6. Verify.
+# 6. Verify. LIBERO's `libero` package needs third_party/libero on PYTHONPATH.
 echo "[client] verifying imports..."
-examples/libero/.venv/bin/python -c "import libero, robosuite, openpi_client; print('CLIENT OK')"
+PYTHONPATH="$REPO/third_party/libero" \
+  examples/libero/.venv/bin/python -c "import libero, robosuite, openpi_client; print('CLIENT OK')"
 echo "[client] DONE. Run evals with: examples/libero/.venv/bin/python examples/libero/main.py ..."
