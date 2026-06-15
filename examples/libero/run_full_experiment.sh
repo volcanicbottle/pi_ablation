@@ -113,11 +113,11 @@ run_eval_matrix() {  # $1=out_root
       PYTHONPATH="${PYTHONPATH:-}:${REPO_ROOT}/third_party/libero" \
       MUJOCO_GL="$MUJOCO_GL" \
       "$LIBERO_PY" examples/libero/main.py \
-        --ablation "$ab" \
-        --task-suite-name "$suite" \
-        --num-trials-per-task "$TRIALS" \
-        --seed "$SEED" \
-        --video-out-path "$out" \
+        --args.ablation "$ab" \
+        --args.task-suite-name "$suite" \
+        --args.num-trials-per-task "$TRIALS" \
+        --args.seed "$SEED" \
+        --args.video-out-path "$out" \
         2>&1 | tee "${out}/${suite}.log"
     done
   done

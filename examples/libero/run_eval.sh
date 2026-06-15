@@ -23,6 +23,7 @@ OUT_ROOT="${OUT_ROOT:-data/libero}"
 
 export PYTHONPATH="${PYTHONPATH:-}:$REPO/third_party/libero"
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
+export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 
 if [ ! -x "$LIBERO_PY" ]; then
   echo "[eval] ERROR: client interpreter not found: $LIBERO_PY" >&2
@@ -36,10 +37,10 @@ for ab in $ARMS; do
     echo "[eval] === ablation=$ab suite=$suite trials=$TRIALS -> $out ==="
     mkdir -p "$out"
     "$LIBERO_PY" examples/libero/main.py \
-      --ablation "$ab" \
-      --task-suite-name "$suite" \
-      --num-trials-per-task "$TRIALS" \
-      --video-out-path "$out" \
+      --args.ablation "$ab" \
+      --args.task-suite-name "$suite" \
+      --args.num-trials-per-task "$TRIALS" \
+      --args.video-out-path "$out" \
       2>&1 | tee "$out/$suite.log"
   done
 done
